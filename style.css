@@ -165,7 +165,8 @@ section .title::after{
 /* home section styling */
 .home{
     display: flex;
-    background: url("images/nikita-kachanovsky-OVbeSXRk_9E-unsplash.jpg") no-repeat center;
+    background: url("./images/banner.jpg") no-repeat center;
+    background-color: #111;
     height: 110vh;
     color: #fff;
     min-height: 500px;
