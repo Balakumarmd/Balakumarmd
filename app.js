@@ -1,10 +1,11 @@
 /* =========================================================
    LEDGER — app.js
-   Plain JS, no build step, no external runtime deps.
-   Everything persists to localStorage under STORAGE_KEY.
+   Data lives in Firestore, scoped per signed-in user.
+   A local cache (localStorage) mirrors it for instant loads
+   and offline use; Firestore's own offline persistence queues
+   writes made while offline and syncs them automatically once
+   back online.
    ========================================================= */
-
-const STORAGE_KEY = 'ledger_data_v1';
 
 const EXPENSE_CATEGORIES = [
   'Food & Dining','Fuel & Transport','Groceries','Bills & Utilities','Rent',
@@ -46,31 +47,44 @@ const CATEGORY_ICONS = {
 };
 function categoryIcon(cat){ return CATEGORY_ICONS[cat] || '•'; }
 
-let state = loadState();
+/* ---------------- FIREBASE ---------------- */
+let state = defaultState();
+let currentUser = null;
+let userDocRef = null;
+let unsubscribeSnapshot = null;
+let firstSnapshotHandled = false;
+let suppressNextEcho = false;
 
-function loadState(){
-  try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if(!raw) return defaultState();
-    const parsed = JSON.parse(raw);
-    const d = defaultState();
-    // shallow-merge to survive schema growth across versions
-    return {
-      ...d, ...parsed,
-      investments: { ...d.investments, ...(parsed.investments||{}) },
-      budgets: { ...(parsed.budgets||{}) },
-      recurring: parsed.recurring || [],
-      netWorthHistory: parsed.netWorthHistory || []
-    };
-  }catch(e){
-    console.error('Failed to load state, starting fresh', e);
-    return defaultState();
-  }
+firebase.initializeApp(FIREBASE_CONFIG);
+const auth = firebase.auth();
+const db = firebase.firestore();
+db.enablePersistence({ synchronizeTabs: true }).catch((err)=>{
+  console.warn('Offline persistence not available in this browser/tab:', err.code);
+});
+
+function mergeWithDefaults(data){
+  const d = defaultState();
+  data = data || {};
+  return {
+    ...d, ...data,
+    investments: { ...d.investments, ...(data.investments||{}) },
+    budgets: { ...(data.budgets||{}) },
+    recurring: data.recurring || [],
+    netWorthHistory: data.netWorthHistory || []
+  };
 }
+
+function localCacheKey(uidStr){ return 'ledger_cache_' + uidStr; }
 
 function saveState(){
   recordNetWorthSnapshot();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if(currentUser) localStorage.setItem(localCacheKey(currentUser.uid), JSON.stringify(state));
+  if(userDocRef){
+    suppressNextEcho = true;
+    userDocRef.set(state).catch(err=>{
+      console.warn('Firestore write queued/failed (will retry when online):', err.message);
+    });
+  }
 }
 
 function recordNetWorthSnapshot(){
@@ -82,6 +96,143 @@ function recordNetWorthSnapshot(){
   else{ hist.push({date: today, value}); }
   if(hist.length>400) hist.shift();
 }
+
+function startUserSession(user){
+  currentUser = user;
+  firstSnapshotHandled = false;
+  userDocRef = db.collection('users').doc(user.uid);
+
+  const initial = escapeHtml(user.email||'?').charAt(0).toUpperCase();
+  document.getElementById('avatarInitial').textContent = initial || '?';
+  document.getElementById('settingsAvatarInitial').textContent = initial || '?';
+  document.getElementById('settingsEmail').textContent = user.email || '—';
+
+  // show cached data immediately (works offline / on slow connections)
+  try{
+    const cached = localStorage.getItem(localCacheKey(user.uid));
+    if(cached) state = mergeWithDefaults(JSON.parse(cached));
+  }catch(e){ /* ignore malformed cache */ }
+
+  document.getElementById('splashScreen').hidden = true;
+  document.getElementById('authScreen').hidden = true;
+  document.getElementById('app').hidden = false;
+
+  unsubscribeSnapshot = userDocRef.onSnapshot((snap)=>{
+    updateSyncStatus(snap.metadata.fromCache);
+    if(!snap.exists){
+      userDocRef.set(state); // first-time user: seed with defaults (or cached data)
+    } else if(suppressNextEcho){
+      suppressNextEcho = false;
+    } else {
+      state = mergeWithDefaults(snap.data());
+      localStorage.setItem(localCacheKey(user.uid), JSON.stringify(state));
+    }
+    if(!firstSnapshotHandled){
+      firstSnapshotHandled = true;
+      processRecurring();
+      goTo('dashboard');
+    } else {
+      renderPage(currentPageName());
+    }
+  }, (err)=>{
+    console.error('Firestore sync error:', err);
+    toast('Could not sync with the server — working from local data.');
+    if(!firstSnapshotHandled){
+      firstSnapshotHandled = true;
+      processRecurring();
+      goTo('dashboard');
+    }
+  });
+}
+
+function endUserSession(){
+  if(unsubscribeSnapshot) unsubscribeSnapshot();
+  unsubscribeSnapshot = null;
+  currentUser = null;
+  userDocRef = null;
+  state = defaultState();
+  document.getElementById('app').hidden = true;
+  document.getElementById('splashScreen').hidden = true;
+  document.getElementById('authScreen').hidden = false;
+  document.getElementById('loginForm').reset();
+  document.getElementById('registerForm').reset();
+}
+
+function updateSyncStatus(fromCache){
+  const el = document.getElementById('syncStatus');
+  if(!el) return;
+  if(!navigator.onLine){ el.textContent = 'Offline — will sync automatically'; el.classList.add('offline'); }
+  else if(fromCache){ el.textContent = 'Synced (cached copy)'; el.classList.remove('offline'); }
+  else { el.textContent = 'Synced'; el.classList.remove('offline'); }
+}
+
+function updateOfflineBanner(){
+  document.getElementById('offlineBanner').hidden = navigator.onLine;
+  updateSyncStatus(false);
+}
+window.addEventListener('online', updateOfflineBanner);
+window.addEventListener('offline', updateOfflineBanner);
+updateOfflineBanner();
+
+auth.onAuthStateChanged((user)=>{
+  if(user){ startUserSession(user); }
+  else{ endUserSession(); }
+});
+
+/* ---- auth screen wiring ---- */
+document.querySelectorAll('.auth-tab').forEach(tab=>{
+  tab.addEventListener('click', ()=>{
+    document.querySelectorAll('.auth-tab').forEach(t=>t.classList.toggle('active', t===tab));
+    document.getElementById('loginForm').hidden = tab.dataset.authtab!=='login';
+    document.getElementById('registerForm').hidden = tab.dataset.authtab!=='register';
+  });
+});
+
+function friendlyAuthError(err){
+  const map = {
+    'auth/invalid-email':'That email address looks invalid.',
+    'auth/user-disabled':'This account has been disabled.',
+    'auth/user-not-found':'No account found with that email.',
+    'auth/wrong-password':'Incorrect password.',
+    'auth/invalid-credential':'Incorrect email or password.',
+    'auth/email-already-in-use':'An account with that email already exists.',
+    'auth/weak-password':'Password should be at least 6 characters.',
+    'auth/network-request-failed':'Network error — check your connection and try again.'
+  };
+  return map[err.code] || err.message || 'Something went wrong. Please try again.';
+}
+
+document.getElementById('loginForm').addEventListener('submit', (e)=>{
+  e.preventDefault();
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+  auth.signInWithEmailAndPassword(email, password).catch(err=>{ errEl.textContent = friendlyAuthError(err); });
+});
+
+document.getElementById('registerForm').addEventListener('submit', (e)=>{
+  e.preventDefault();
+  const email = document.getElementById('registerEmail').value.trim();
+  const password = document.getElementById('registerPassword').value;
+  const password2 = document.getElementById('registerPassword2').value;
+  const errEl = document.getElementById('registerError');
+  errEl.textContent = '';
+  if(password !== password2){ errEl.textContent = 'Passwords do not match.'; return; }
+  auth.createUserWithEmailAndPassword(email, password).catch(err=>{ errEl.textContent = friendlyAuthError(err); });
+});
+
+document.getElementById('forgotPasswordBtn').addEventListener('click', ()=>{
+  const email = document.getElementById('loginEmail').value.trim();
+  if(!email){ document.getElementById('loginError').textContent = 'Enter your email above first.'; return; }
+  auth.sendPasswordResetEmail(email)
+    .then(()=> toast('Password reset email sent'))
+    .catch(err=>{ document.getElementById('loginError').textContent = friendlyAuthError(err); });
+});
+
+document.getElementById('logoutBtn').addEventListener('click', ()=>{
+  if(confirm('Log out of Ledger?')) auth.signOut();
+});
 
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
@@ -239,10 +390,13 @@ const PAGE_TITLES = {
   dashboard:'Ledger', expense:'Spend', income:'Income', analytics:'Analytics',
   more:'More', accounts:'Accounts & cards', loans:'Loans & EMIs',
   investments:'Investments & PF', split:'Split with friends', budgets:'Budgets',
-  recurring:'Recurring', settings:'Settings'
+  recurring:'Recurring', settings:'Account & backup'
 };
+let activePage = 'dashboard';
+function currentPageName(){ return activePage; }
 
 function goTo(pageName){
+  activePage = pageName;
   pages.forEach(p=> p.classList.toggle('active', p.dataset.page===pageName));
   navBtns.forEach(b=> b.classList.toggle('active', b.dataset.nav===pageName));
   topbarTitle.textContent = PAGE_TITLES[pageName] || 'Ledger';
@@ -1611,7 +1765,7 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
     try{
       const parsed = JSON.parse(reader.result);
       if(!confirm('This will replace all current data with the backup. Continue?')) return;
-      state = { ...defaultState(), ...parsed, investments: { ...defaultState().investments, ...(parsed.investments||{}) } };
+      state = mergeWithDefaults(parsed);
       saveState();
       toast('Backup restored');
       goTo('dashboard');
@@ -1631,5 +1785,3 @@ document.getElementById('resetBtn').addEventListener('click', ()=>{
 
 /* ================= INIT ================= */
 document.getElementById('settingsBtn').addEventListener('click', ()=> goTo('settings'));
-processRecurring();
-goTo('dashboard');

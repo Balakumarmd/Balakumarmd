@@ -3,15 +3,71 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="theme-color" content="#101915">
+<meta name="theme-color" content="#4338CA">
 <title>Ledger — Personal Finance</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-<div id="app">
+<!-- ===== SPLASH (shown while checking login state) ===== -->
+<div id="splashScreen" class="splash">
+  <div class="splash-mark">L</div>
+</div>
+
+<!-- ===== AUTH SCREEN ===== -->
+<div id="authScreen" class="auth-screen" hidden>
+  <div class="auth-card">
+    <div class="auth-mark">L</div>
+    <h1 class="auth-title">Ledger</h1>
+    <p class="auth-sub">Your money, tracked properly.</p>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-authtab="login">Log in</button>
+      <button class="auth-tab" data-authtab="register">Create account</button>
+    </div>
+
+    <!-- LOGIN -->
+    <form id="loginForm" class="auth-form">
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="loginEmail" autocomplete="email" required placeholder="you@example.com">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="loginPassword" autocomplete="current-password" required placeholder="••••••••">
+      </div>
+      <p class="auth-error" id="loginError"></p>
+      <button type="submit" class="btn-block" id="loginSubmit">Log in</button>
+      <button type="button" class="link-btn" id="forgotPasswordBtn">Forgot password?</button>
+    </form>
+
+    <!-- REGISTER -->
+    <form id="registerForm" class="auth-form" hidden>
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="registerEmail" autocomplete="email" required placeholder="you@example.com">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="registerPassword" autocomplete="new-password" required placeholder="At least 6 characters">
+      </div>
+      <div class="field">
+        <label>Confirm password</label>
+        <input type="password" id="registerPassword2" autocomplete="new-password" required placeholder="••••••••">
+      </div>
+      <p class="auth-error" id="registerError"></p>
+      <button type="submit" class="btn-block" id="registerSubmit">Create account</button>
+    </form>
+
+    <p class="auth-footnote">Your data is private to your account and backed by Firebase — synced online, cached automatically when you're offline.</p>
+  </div>
+</div>
+
+<div id="app" hidden>
+
+  <div class="offline-banner" id="offlineBanner" hidden>Offline — changes save on this device and sync when you're back online.</div>
 
   <!-- ===== TOP BAR ===== -->
   <header class="topbar">
@@ -19,7 +75,7 @@
       <div class="brand-mark">L</div>
       <div class="topbar-title" id="topbarTitle">Ledger</div>
     </div>
-    <button class="icon-btn" id="settingsBtn" aria-label="Settings">⋮</button>
+    <button class="avatar-btn" id="settingsBtn" aria-label="Account"><span id="avatarInitial">?</span></button>
   </header>
 
   <!-- ===== PAGES ===== -->
@@ -155,7 +211,7 @@
           <span>Recurring</span><span class="chev">›</span>
         </button>
         <button class="menu-item" data-nav="settings">
-          <span>Backup &amp; settings</span><span class="chev">›</span>
+          <span>Account &amp; backup</span><span class="chev">›</span>
         </button>
       </div>
     </section>
@@ -278,15 +334,25 @@
     <section class="page" data-page="settings">
       <div class="page-head sub">
         <button class="back-btn" data-nav="more">‹ More</button>
-        <h2>Backup &amp; settings</h2>
+        <h2>Account &amp; backup</h2>
       </div>
+
+      <div class="account-card">
+        <div class="account-avatar" id="settingsAvatarInitial">?</div>
+        <div>
+          <div class="account-email" id="settingsEmail">—</div>
+          <div class="account-sync" id="syncStatus">Synced</div>
+        </div>
+      </div>
+
       <div class="settings-list">
         <button class="menu-item" id="exportBtn"><span>Export backup (.json)</span><span class="chev">↓</span></button>
         <button class="menu-item" id="importBtn"><span>Restore from backup</span><span class="chev">↑</span></button>
         <input type="file" id="importFile" accept="application/json" hidden>
         <button class="menu-item danger" id="resetBtn"><span>Reset all data</span><span class="chev">!</span></button>
+        <button class="menu-item danger" id="logoutBtn"><span>Log out</span><span class="chev">→</span></button>
       </div>
-      <p class="settings-note">Everything is stored only on this device (localStorage). Export a backup regularly, especially before clearing browser data or reinstalling the app.</p>
+      <p class="settings-note">Your data lives in your private Firebase account, synced across devices when online, and cached on this device so it still works offline.</p>
     </section>
 
   </main>
@@ -325,6 +391,11 @@
 
 <div class="toast" id="toast"></div>
 
+<!-- ===== FIREBASE (compat SDK — plain <script> tags, no bundler needed) ===== -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="js/firebase-config.js"></script>
 <script src="js/app.js" defer></script>
 </body>
 </html>
