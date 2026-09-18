@@ -362,6 +362,13 @@ select{
 .chart-slot{ display:flex; justify-content:center; }
 .legend{ display:flex; flex-direction:column; gap: 7px; margin-top: 14px; }
 .legend-row{ display:flex; align-items:center; justify-content:space-between; font-size:12px; }
+.legend-row.clickable{ cursor:pointer; padding:6px 8px; border-radius:8px; margin: 0 -8px; }
+.legend-row.clickable:active{ background: var(--surface-2); }
+.drilldown-head{
+  display:flex; justify-content:space-between; align-items:center;
+  margin-top:16px; padding-top:14px; border-top:1px solid var(--border-soft);
+  font-size:13px; font-weight:700; color: var(--text);
+}
 .legend-left{ display:flex; align-items:center; gap:8px; }
 .legend-dot{ width:9px; height:9px; border-radius:3px; flex-shrink:0; }
 .legend-amt{ font-family: var(--font-mono); color: var(--text-muted); font-weight:600; }

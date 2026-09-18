@@ -179,11 +179,13 @@
         <div id="analyticsSpendSummary"></div>
         <div id="donutChart" class="chart-slot"></div>
         <div id="categoryLegend" class="legend"></div>
+        <div id="categoryDrilldown"></div>
       </div>
       <div class="chart-card">
         <div class="chart-title">Where it's coming from</div>
         <div id="incomeDonutChart" class="chart-slot"></div>
         <div id="incomeCategoryLegend" class="legend"></div>
+        <div id="incomeDrilldown"></div>
       </div>
       <div class="chart-card">
         <div class="chart-title">Income vs spend, last 6 months</div>
@@ -205,6 +207,20 @@
       <div class="chart-card">
         <div class="chart-title">Loans &amp; EMIs pending</div>
         <div id="loanAnalytics"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Salary vs spend</div>
+        <div id="salaryComparison"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Balance comparison</div>
+        <div class="field" style="margin-bottom:12px;">
+          <label>Compare balance as of</label>
+          <input type="date" id="balanceCompareDate">
+        </div>
+        <div id="balanceCompareStats"></div>
+        <div id="balanceCompareChart" class="chart-slot" style="margin-top:14px;"></div>
+        <p class="field-hint" id="balanceCompareNote" style="text-align:center; margin-top:6px;"></p>
       </div>
     </section>
 

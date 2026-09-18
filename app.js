@@ -74,6 +74,8 @@ function mergeWithDefaults(data){
     netWorthHistory: data.netWorthHistory || []
   };
   if(!merged.incomeSources.includes('Cashback')) merged.incomeSources.push('Cashback');
+  merged.accounts.forEach(a=> a.balance = round2(a.balance));
+  merged.creditCards.forEach(c=> c.currentDue = round2(c.currentDue));
   return merged;
 }
 
@@ -320,22 +322,28 @@ function payerLabel(ref){
   return '—';
 }
 
+/* Money helper: JS floating point drifts over repeated add/subtract
+   (e.g. 1570.62 can silently become 1570.6200000000008 after enough
+   transactions). Rounding to the nearest paisa after every mutation
+   keeps stored balances exact instead of letting tiny errors compound. */
+function round2(n){ return Math.round((Number(n)||0) * 100) / 100; }
+
 function applyExpensePayment(ref, amount){
   if(ref.kind==='account'){
     const a = getAccount(ref.id);
-    if(a) a.balance -= amount;
+    if(a) a.balance = round2(a.balance - amount);
   } else if(ref.kind==='card'){
     const c = getCard(ref.id);
-    if(c) c.currentDue += amount;
+    if(c) c.currentDue = round2(c.currentDue + amount);
   }
 }
 function reverseExpensePayment(ref, amount){
   if(ref.kind==='account'){
     const a = getAccount(ref.id);
-    if(a) a.balance += amount;
+    if(a) a.balance = round2(a.balance + amount);
   } else if(ref.kind==='card'){
     const c = getCard(ref.id);
-    if(c) c.currentDue -= amount;
+    if(c) c.currentDue = round2(c.currentDue - amount);
   }
 }
 
@@ -344,19 +352,19 @@ function reverseExpensePayment(ref, amount){
 function applyIncomeCredit(ref, amount){
   if(ref.kind==='account'){
     const a = getAccount(ref.id);
-    if(a) a.balance += amount;
+    if(a) a.balance = round2(a.balance + amount);
   } else if(ref.kind==='card'){
     const c = getCard(ref.id);
-    if(c) c.currentDue -= amount;
+    if(c) c.currentDue = round2(c.currentDue - amount);
   }
 }
 function reverseIncomeCredit(ref, amount){
   if(ref.kind==='account'){
     const a = getAccount(ref.id);
-    if(a) a.balance -= amount;
+    if(a) a.balance = round2(a.balance - amount);
   } else if(ref.kind==='card'){
     const c = getCard(ref.id);
-    if(c) c.currentDue += amount;
+    if(c) c.currentDue = round2(c.currentDue + amount);
   }
 }
 
@@ -374,7 +382,7 @@ function deleteTransaction(id, onDone){
       }
       if(t.meta.cardId){
         const c = getCard(t.meta.cardId);
-        if(c) c.currentDue += t.amount;
+        if(c) c.currentDue = round2(c.currentDue + t.amount);
       }
       if(t.meta.recurringId){
         const r = state.recurring.find(x=>x.id===t.meta.recurringId);
@@ -997,9 +1005,48 @@ function renderAnalytics(){
   const current = sel.value || monthKey(todayISO());
   sel.innerHTML = monthOptionsHtml(current);
   sel.onchange = renderAnalyticsCharts;
+  const dateSel = document.getElementById('balanceCompareDate');
+  if(!dateSel.value) dateSel.value = todayISO();
+  dateSel.onchange = renderBalanceComparison;
   renderAnalyticsCharts();
 }
 const CHART_COLORS = ['#C9A24B','#6FBF8B','#C9694A','#7C93AE','#A96BC9','#6BC0C9','#C9B36B','#8FA396','#B98CC9','#C98F6B','#6B9FC9','#8FC96B'];
+let selectedSpendCategory = null;
+let selectedIncomeCategory = null;
+
+function renderSpendDrilldown(mk){
+  const el = document.getElementById('categoryDrilldown');
+  if(!selectedSpendCategory){ el.innerHTML = ''; return; }
+  const items = state.transactions
+    .filter(t=>t.type==='expense' && monthKey(t.date)===mk && t.category===selectedSpendCategory)
+    .sort((a,b)=> b.date.localeCompare(a.date));
+  el.innerHTML = `
+    <div class="drilldown-head">
+      <span>${categoryIcon(selectedSpendCategory)} ${escapeHtml(selectedSpendCategory)} this month</span>
+      <button class="link-btn" id="clearSpendDrilldown">Clear ✕</button>
+    </div>
+    ${items.length ? items.map(t=>expenseRow(t)).join('') : emptyNote('Nothing in this category this month.')}
+  `;
+  document.getElementById('clearSpendDrilldown').addEventListener('click', ()=>{ selectedSpendCategory = null; renderSpendDrilldown(mk); });
+  bindTxnRowClicks(el, ()=>renderAnalyticsCharts());
+}
+
+function renderIncomeDrilldown(mk){
+  const el = document.getElementById('incomeDrilldown');
+  if(!selectedIncomeCategory){ el.innerHTML = ''; return; }
+  const items = state.transactions
+    .filter(t=>t.type==='income' && monthKey(t.date)===mk && t.category===selectedIncomeCategory)
+    .sort((a,b)=> b.date.localeCompare(a.date));
+  el.innerHTML = `
+    <div class="drilldown-head">
+      <span>${categoryIcon(selectedIncomeCategory)} ${escapeHtml(selectedIncomeCategory)} this month</span>
+      <button class="link-btn" id="clearIncomeDrilldown">Clear ✕</button>
+    </div>
+    ${items.length ? items.map(t=>incomeRow(t)).join('') : emptyNote('Nothing from this source this month.')}
+  `;
+  document.getElementById('clearIncomeDrilldown').addEventListener('click', ()=>{ selectedIncomeCategory = null; renderIncomeDrilldown(mk); });
+  bindTxnRowClicks(el, ()=>renderAnalyticsCharts());
+}
 
 function renderAnalyticsCharts(){
   const mk = document.getElementById('analyticsMonthFilter').value;
@@ -1031,10 +1078,16 @@ function renderAnalyticsCharts(){
 
   document.getElementById('donutChart').innerHTML = total? drawDonut(entries, total, 'your spend') : '';
   document.getElementById('categoryLegend').innerHTML = entries.length ? entries.map((e,i)=>`
-    <div class="legend-row">
+    <div class="legend-row clickable" data-cat="${escapeHtml(e[0])}">
       <div class="legend-left"><span class="legend-dot" style="background:${CHART_COLORS[i%CHART_COLORS.length]}"></span>${escapeHtml(e[0])}</div>
-      <span class="legend-amt">${formatCurrency(e[1])}</span>
+      <span class="legend-amt">${formatCurrency(e[1])} ›</span>
     </div>`).join('') : emptyNote('No spending recorded for this month.');
+  bindOnce(document.getElementById('categoryLegend'), 'click', (e)=>{
+    const row = e.target.closest('[data-cat]'); if(!row) return;
+    selectedSpendCategory = selectedSpendCategory===row.dataset.cat ? null : row.dataset.cat;
+    renderSpendDrilldown(mk);
+  });
+  renderSpendDrilldown(mk);
 
   // income breakdown — where the money came from
   const incomeItems = state.transactions.filter(t=>t.type==='income' && monthKey(t.date)===mk);
@@ -1044,16 +1097,24 @@ function renderAnalyticsCharts(){
   const incomeTotal = incomeEntries.reduce((s,e)=>s+e[1],0);
   document.getElementById('incomeDonutChart').innerHTML = incomeTotal ? drawDonut(incomeEntries, incomeTotal, 'total income') : '';
   document.getElementById('incomeCategoryLegend').innerHTML = incomeEntries.length ? incomeEntries.map((e,i)=>`
-    <div class="legend-row">
+    <div class="legend-row clickable" data-inccat="${escapeHtml(e[0])}">
       <div class="legend-left"><span class="legend-dot" style="background:${CHART_COLORS[i%CHART_COLORS.length]}"></span>${escapeHtml(e[0])}</div>
-      <span class="legend-amt">${formatCurrency(e[1])}</span>
+      <span class="legend-amt">${formatCurrency(e[1])} ›</span>
     </div>`).join('') : emptyNote('No income recorded this month.');
+  bindOnce(document.getElementById('incomeCategoryLegend'), 'click', (e)=>{
+    const row = e.target.closest('[data-inccat]'); if(!row) return;
+    selectedIncomeCategory = selectedIncomeCategory===row.dataset.inccat ? null : row.dataset.inccat;
+    renderIncomeDrilldown(mk);
+  });
+  renderIncomeDrilldown(mk);
 
   document.getElementById('barChart').innerHTML = drawBarChart();
   document.getElementById('netWorthChart').innerHTML = drawNetWorthLine();
   renderCardDuesAnalytics(mk);
   renderInvestmentAnalytics();
   renderLoanAnalytics();
+  renderSalaryComparison(mk);
+  renderBalanceComparison();
 }
 
 function renderCardDuesAnalytics(mk){
@@ -1210,34 +1271,143 @@ function drawDonut(entries, total, centerLabel){
   </svg>`;
 }
 
-function drawBarChart(){
+function lastNMonthKeys(n){
   const months = [];
   const now = new Date();
-  for(let i=5;i>=0;i--){
-    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
-    months.push(d.toISOString().slice(0,7));
-  }
-  const data = months.map(mk=>{
-    const items = state.transactions.filter(t=>monthKey(t.date)===mk);
-    return {
-      mk,
-      income: items.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0),
-      expense: items.filter(t=>t.type==='expense').reduce((s,t)=>s+personalShare(t),0)
-    };
-  });
-  const maxVal = Math.max(1, ...data.flatMap(d=>[d.income,d.expense]));
+  for(let i=n-1;i>=0;i--){ const d = new Date(now.getFullYear(), now.getMonth()-i, 1); months.push(d.toISOString().slice(0,7)); }
+  return months;
+}
+function drawTwoSeriesBarChart(rows){
+  const maxVal = Math.max(1, ...rows.flatMap(d=>[d.a,d.b]));
   const chartH = 140, barW = 12, gap = 26, groupW = barW*2+6;
-  const width = data.length*(groupW+gap);
+  const width = rows.length*(groupW+gap);
   let bars = '';
-  data.forEach((d,i)=>{
+  rows.forEach((d,i)=>{
     const x = i*(groupW+gap) + gap/2;
-    const hIncome = (d.income/maxVal)*chartH;
-    const hExpense = (d.expense/maxVal)*chartH;
-    bars += `<rect x="${x}" y="${chartH-hIncome}" width="${barW}" height="${hIncome}" fill="var(--credit-svg)" rx="2"/>`;
-    bars += `<rect x="${x+barW+6}" y="${chartH-hExpense}" width="${barW}" height="${hExpense}" fill="var(--debit-svg)" rx="2"/>`;
+    const hA = (d.a/maxVal)*chartH;
+    const hB = (d.b/maxVal)*chartH;
+    bars += `<rect x="${x}" y="${chartH-hA}" width="${barW}" height="${hA}" fill="var(--credit-svg)" rx="2"/>`;
+    bars += `<rect x="${x+barW+6}" y="${chartH-hB}" width="${barW}" height="${hB}" fill="var(--debit-svg)" rx="2"/>`;
     bars += `<text x="${x+barW}" y="${chartH+16}" text-anchor="middle" fill="var(--text-faint)" font-family="Inter" font-size="9">${monthLabel(d.mk).split(' ')[0].slice(0,3)}</text>`;
   });
   return `<svg width="${Math.max(width,260)}" height="170" viewBox="0 0 ${Math.max(width,260)} 170" style="--credit-svg:#6FBF8B;--debit-svg:#C9694A;">${bars}</svg>`;
+}
+function drawBarChart(){
+  const rows = lastNMonthKeys(6).map(mk=>{
+    const items = state.transactions.filter(t=>monthKey(t.date)===mk);
+    return {
+      mk,
+      a: items.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0),
+      b: items.filter(t=>t.type==='expense').reduce((s,t)=>s+personalShare(t),0)
+    };
+  });
+  return drawTwoSeriesBarChart(rows);
+}
+
+/* ================= SALARY VS SPEND ================= */
+function salaryReceivedInMonth(mk){
+  return round2(state.transactions
+    .filter(t=>t.type==='income' && t.category==='Salary' && monthKey(t.date)===mk)
+    .reduce((s,t)=>s+t.amount,0));
+}
+function personalSpendInMonth(mk){
+  return round2(state.transactions
+    .filter(t=>t.type==='expense' && monthKey(t.date)===mk)
+    .reduce((s,t)=>s+personalShare(t),0));
+}
+function shiftMonthKey(mk, delta){
+  const [y,m] = mk.split('-').map(Number);
+  const d = new Date(y, m-1+delta, 1);
+  return d.toISOString().slice(0,7);
+}
+function renderSalaryComparison(mk){
+  const el = document.getElementById('salaryComparison');
+  const salaryNow = salaryReceivedInMonth(mk);
+  const prevMk = shiftMonthKey(mk, -1);
+  const salaryPrev = salaryReceivedInMonth(prevMk);
+  if(salaryNow===0 && salaryPrev===0){
+    el.innerHTML = emptyNote('No salary logged yet — add income with source "Salary" to see this comparison.');
+    return;
+  }
+  const spendNow = personalSpendInMonth(mk);
+  const spendPrev = personalSpendInMonth(prevMk);
+  const pctNow = salaryNow>0 ? (spendNow/salaryNow*100) : null;
+  const pctPrev = salaryPrev>0 ? (spendPrev/salaryPrev*100) : null;
+  el.innerHTML = `
+    <div class="hero-stats" style="margin-bottom:14px; flex-wrap:wrap; gap:12px;">
+      <div class="hero-stat"><span class="hs-label" style="color:var(--text-muted);">Salary — ${monthLabel(mk)}</span><span class="hs-value credit">${formatCurrency(salaryNow)}</span></div>
+      <div class="hero-stat"><span class="hs-label" style="color:var(--text-muted);">Spent this month</span><span class="hs-value debit">${formatCurrency(spendNow)}</span></div>
+      <div class="hero-stat"><span class="hs-label" style="color:var(--text-muted);">% of salary spent</span><span class="hs-value" style="color:var(--text);">${pctNow!==null ? pctNow.toFixed(1)+'%' : '—'}</span></div>
+    </div>
+    <div class="ic-rule"></div>
+    <div class="people-row">
+      <div class="people-name">${monthLabel(prevMk)}<small>salary ${formatCurrency(salaryPrev)}</small></div>
+      <span class="ic-meta">${pctPrev!==null ? pctPrev.toFixed(1)+'% spent' : 'no salary logged'}</span>
+    </div>
+    <div class="people-row">
+      <div class="people-name">${monthLabel(mk)}<small>salary ${formatCurrency(salaryNow)}</small></div>
+      <span class="ic-meta">${pctNow!==null ? pctNow.toFixed(1)+'% spent' : 'no salary logged'}</span>
+    </div>
+    <div id="salaryBarChart" class="chart-slot" style="margin-top:14px;"></div>
+    <p class="field-hint" style="text-align:center; margin-top:6px;">Green = salary received, red = your spend, per month</p>
+  `;
+  const rows = lastNMonthKeys(6).map(k=>({ mk:k, a: salaryReceivedInMonth(k), b: personalSpendInMonth(k) }));
+  document.getElementById('salaryBarChart').innerHTML = drawTwoSeriesBarChart(rows);
+}
+
+/* ================= BALANCE COMPARISON ================= */
+/* Reconstructs what your total bank/cash balance was on any past date by
+   starting from today's balance and unwinding every account transaction
+   that happened after that date. Works for any date, not just ones
+   captured in a snapshot. */
+function accountBalanceAsOfDate(dateStr){
+  let total = state.accounts.reduce((s,a)=>s+a.balance,0);
+  state.transactions.forEach(t=>{
+    if(t.ref && t.ref.kind==='account' && t.date > dateStr){
+      if(t.type==='expense'){ total = round2(total + t.amount); }
+      else if(t.type==='income'){ total = round2(total - t.amount); }
+    }
+  });
+  return total;
+}
+function endOfMonthBalance(mk){
+  const [y,m] = mk.split('-').map(Number);
+  const lastDay = new Date(y, m, 0); // day 0 of next month = last day of this month
+  return accountBalanceAsOfDate(lastDay.toISOString().slice(0,10));
+}
+function renderBalanceComparison(){
+  const dateVal = document.getElementById('balanceCompareDate').value || todayISO();
+  const balOnDate = accountBalanceAsOfDate(dateVal);
+  const balToday = round2(state.accounts.reduce((s,a)=>s+a.balance,0));
+  const delta = round2(balToday - balOnDate);
+  document.getElementById('balanceCompareStats').innerHTML = `
+    <div class="hero-stats" style="flex-wrap:wrap; gap:12px;">
+      <div class="hero-stat"><span class="hs-label" style="color:var(--text-muted);">On ${formatDate(dateVal)}</span><span class="hs-value" style="color:var(--text);">${formatCurrency(balOnDate)}</span></div>
+      <div class="hero-stat"><span class="hs-label" style="color:var(--text-muted);">Today</span><span class="hs-value" style="color:var(--text);">${formatCurrency(balToday)}</span></div>
+      <div class="hero-stat"><span class="hs-label" style="color:var(--text-muted);">Change</span><span class="hs-value ${delta>=0?'credit':'debit'}">${delta>=0?'+':''}${formatCurrency(delta)}</span></div>
+    </div>
+  `;
+  document.getElementById('balanceCompareChart').innerHTML = drawBalanceLineChart();
+  document.getElementById('balanceCompareNote').textContent =
+    'This only reflects bank/cash accounts that still exist and haven\'t been deleted — it replays your transaction history to work out the past balance.';
+}
+function drawBalanceLineChart(){
+  const months = lastNMonthKeys(6);
+  const values = months.map(endOfMonthBalance);
+  const w=260, h=90, pad=6;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = (max-min) || 1;
+  const pts = values.map((v,i)=>{
+    const x = pad + (i/(values.length-1))*(w-pad*2);
+    const y = h - pad - ((v-min)/range)*(h-pad*2);
+    return `${x},${y}`;
+  }).join(' ');
+  const color = values[values.length-1] >= values[0] ? 'var(--credit)' : 'var(--debit)';
+  return `<svg width="${w}" height="${h+24}" viewBox="0 0 ${w} ${h+24}">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <text x="0" y="${h+18}" fill="var(--text-faint)" font-family="Inter" font-size="9">${monthLabel(months[0]).split(' ')[0].slice(0,3)}</text>
+    <text x="${w}" y="${h+18}" text-anchor="end" fill="var(--text-faint)" font-family="Inter" font-size="9">${monthLabel(months[months.length-1]).split(' ')[0].slice(0,3)}</text>
+  </svg>`;
 }
 
 /* ================= ACCOUNTS & CARDS ================= */
@@ -1377,8 +1547,8 @@ function openPayCardModal(card){
       if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
       const accId = body.querySelector('#fPayFrom').value;
       const acc = getAccount(accId);
-      acc.balance -= amount;
-      card.currentDue -= amount;
+      acc.balance = round2(acc.balance - amount);
+      card.currentDue = round2(card.currentDue - amount);
       state.transactions.push({
         id: uid(), type:'expense', amount, category:'Credit Card Payment',
         description: `Bill payment — ${card.name}`,
@@ -1472,7 +1642,7 @@ function openPayEmiModal(loan){
     body.querySelector('#fEmiSubmit').addEventListener('click', ()=>{
       const accId = body.querySelector('#fEmiFrom').value;
       const acc = getAccount(accId);
-      acc.balance -= loan.emiAmount;
+      acc.balance = round2(acc.balance - loan.emiAmount);
       loan.remainingMonths = Math.max(0, loan.remainingMonths-1);
       state.transactions.push({
         id: uid(), type:'expense', amount: loan.emiAmount, category:'EMI & Loan',
@@ -1767,7 +1937,7 @@ function openSettleModal(gid,pid){
     body.querySelector('#fSettleSubmit').addEventListener('click', ()=>{
       const accId = body.querySelector('#fSettleAcc').value;
       const acc = getAccount(accId);
-      acc.balance += p.share;
+      acc.balance = round2(acc.balance + p.share);
       p.paid = true;
       state.transactions.push({
         id: uid(), type:'income', amount: p.share, category:'Split Settlement',
