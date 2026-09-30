@@ -81,9 +81,29 @@ function mergeWithDefaults(data){
 
 function localCacheKey(uidStr){ return 'ledger_cache_' + uidStr; }
 
+// Encrypt cached financial data before it touches localStorage (CWE-312: cleartext storage).
+async function cacheCryptoKey_(uidStr){
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('ledger-cache:'+uidStr));
+  return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt','decrypt']);
+}
+async function encryptCache(uidStr, data){
+  const key = await cacheCryptoKey_(uidStr);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const buf = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, new TextEncoder().encode(JSON.stringify(data)));
+  localStorage.setItem(localCacheKey(uidStr), JSON.stringify({iv:[...iv], data:[...new Uint8Array(buf)]}));
+}
+async function decryptCache(uidStr){
+  const raw = localStorage.getItem(localCacheKey(uidStr));
+  if(!raw) return null;
+  const {iv, data} = JSON.parse(raw);
+  const key = await cacheCryptoKey_(uidStr);
+  const buf = await crypto.subtle.decrypt({name:'AES-GCM', iv:new Uint8Array(iv)}, key, new Uint8Array(data));
+  return JSON.parse(new TextDecoder().decode(buf));
+}
+
 function saveState(){
   recordNetWorthSnapshot();
-  if(currentUser) localStorage.setItem(localCacheKey(currentUser.uid), JSON.stringify(state));
+  if(currentUser) encryptCache(currentUser.uid, state).catch(err=>console.warn('Cache encrypt failed:', err.message));
   if(userDocRef){
     suppressNextEcho = true;
     userDocRef.set(state).catch(err=>{
@@ -113,10 +133,9 @@ function startUserSession(user){
   document.getElementById('settingsEmail').textContent = user.email || '—';
 
   // show cached data immediately (works offline / on slow connections)
-  try{
-    const cached = localStorage.getItem(localCacheKey(user.uid));
-    if(cached) state = mergeWithDefaults(JSON.parse(cached));
-  }catch(e){ /* ignore malformed cache */ }
+  decryptCache(user.uid).then(cached=>{
+    if(cached) state = mergeWithDefaults(cached);
+  }).catch(e=>{ /* ignore malformed cache */ });
 
   document.getElementById('splashScreen').hidden = true;
   document.getElementById('authScreen').hidden = true;
@@ -130,7 +149,7 @@ function startUserSession(user){
       suppressNextEcho = false;
     } else {
       state = mergeWithDefaults(snap.data());
-      localStorage.setItem(localCacheKey(user.uid), JSON.stringify(state));
+      encryptCache(user.uid, state).catch(err=>console.warn('Cache encrypt failed:', err.message));
     }
     if(!firstSnapshotHandled){
       firstSnapshotHandled = true;
